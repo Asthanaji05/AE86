@@ -15,13 +15,15 @@ const CFG = {
   viewWidth: 20,         // world units visible across the screen at the car's distance
   fov: 28,
   elevationDeg: 35,      // camera looks down at the "road" from this angle
-  // Key points in screen fractions (x from left, y from top). The car appears at `start` (off the right edge),
-  // slides in and spins to `drift`, drives to `center` and waits there. `turn` is where it spins around when
-  // you pick Later; `exitRight` / `exitLeft` are just off-screen.
-  route: {
-    start: [1.22, 0.50], drift: [0.26, 0.55], center: [0.50, 0.55],
-    turn: [0.64, 0.55], exitRight: [1.28, 0.55], exitLeft: [-0.28, 0.55],
-  },
+  // The car appears at `start` (x, y as screen fractions: off the right edge, mid-height) and slides down
+  // onto the bottom line. Its height there is NOT set here: it is solved from the window size and the car's
+  // bounding box so that wheels, spinning body and smoke clear the bottom edge by `bottomPadPx`.
+  start: [1.22, 0.50],
+  bottomPadPx: 16,       // free space kept under the car and its smoke
+  buttonGapPx: 20,       // gap between the buttons and the highest point the car can reach
+  // Positions along the bottom line (x only, as screen fractions from the left): it slides and spins at
+  // `drift`, drives to `center` and waits; `turn` is where it spins around on Later; the exits are just off-screen.
+  floorX: { drift: 0.26, center: 0.50, turn: 0.64, exitRight: 1.28, exitLeft: -0.28 },
 };
 
 const role = typeof process === 'undefined' ? 'page' : process.type === 'browser' ? 'main' : 'preload';
@@ -201,6 +203,9 @@ async function startRenderer() {
   scene.add(car);
   car.updateMatrixWorld(true);
   const carWidth = fitted.max.x - fitted.min.x;
+  // Bounding-box facts used for layout: height, and the radius of the footprint circle swept by a spinning car.
+  const carHeight = fitted.max.y - fitted.min.y;
+  const footRadius = Math.hypot(carWidth, fitted.max.z - fitted.min.z) / 2;
 
   const shadow = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
@@ -213,11 +218,14 @@ async function startRenderer() {
   // Wheels: put each wheel group on its own pivot at the tyre centre, so it spins in place
   // (steer pivot -> spin pivot -> wheel). The model faces -z with its axles along x.
   const wheels = [];
+  let wheelReach = 0; // how far the outer tyre edges are from the car's centre (smoke starts there)
   for (const [name, rear] of [['fl', false], ['fr', false], ['rl', true], ['rr', true]]) {
     const group = body.getObjectByName(name);
     if (!group) { console.warn('Wheel group not found:', name); continue; }
     const tyre = body.getObjectByName(`${name}_tyre_0`) || group;
     const tb = new THREE.Box3().setFromObject(tyre);
+    const wc = tb.getCenter(new V3());
+    wheelReach = Math.max(wheelReach, Math.hypot(wc.x, wc.z) + (tb.max.x - tb.min.x) / 2);
     const centre = body.worldToLocal(tb.getCenter(new V3()));
     const steer = new THREE.Object3D(), spin = new THREE.Object3D();
     steer.position.copy(centre);
@@ -230,7 +238,10 @@ async function startRenderer() {
     console.log(`Wheel ${name}: radius ${radius.toFixed(3)}, pivot ${centre.toArray().map((n) => n.toFixed(2)).join(', ')}`);
   }
 
+  const smokeReach = (wheels.length ? wheelReach : footRadius) + 0.7; // wheel position + sideways puff drift
+
   /* ---- smoke ---- */
+  const SMOKE_MAX = 3.6; // largest puff diameter in world units; layout keeps this much smoke on-screen
   const smokeTex = blob('232,232,232', 0.9);
   const puffs = Array.from({ length: 120 }, () => {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
@@ -246,7 +257,7 @@ async function startRenderer() {
     s.position.set(s.position.x + rnd(-0.15, 0.15), 0.2, s.position.z + rnd(-0.15, 0.15));
     Object.assign(s.userData, {
       age: 0, life: rnd(0.8, 1.3), vx: rnd(-0.4, 0.4), vy: rnd(0.3, 0.6), vz: rnd(-0.4, 0.4),
-      s0: rnd(0.6, 0.9), s1: rnd(2.4, 3.6), o0: rnd(0.35, 0.5),
+      s0: rnd(0.6, 0.9), s1: rnd(2.4, SMOKE_MAX), o0: rnd(0.35, 0.5),
     });
     s.visible = true;
   }
@@ -271,15 +282,49 @@ async function startRenderer() {
   }
 
   /* ---- the sequence: a small state machine with one pose function per state ---- */
-  const K = {}; // key points on the ground plane, planned from CFG.route (screen fractions) at each start
+  const K = {}; // key points on the ground plane, planned from CFG (screen fractions + the solved bottom line) at each start
   const ray = new V3();
   function groundAt(fx, fy, out) {
     ray.set(fx * 2 - 1, 1 - fy * 2, 0.5).unproject(camera).sub(camera.position);
     return out.copy(camera.position).addScaledVector(ray, -camera.position.y / ray.y);
   }
   const plan = () => {
-    for (const k in CFG.route) K[k] = groundAt(CFG.route[k][0], CFG.route[k][1], K[k] || new V3());
+  const row = 0.90; // Test: place the car's ground line at 90% of screen height
+  K.start = groundAt(
+    CFG.start[0],
+    Math.min(CFG.start[1], row - 0.04),
+    K.start || new V3()
+  );
+
+  for (const k in CFG.floorX) {
+    K[k] = groundAt(CFG.floorX[k], row, K[k] || new V3());
+  }
+};
+
+  // <layout>
+  // Where the car sits vertically. We look for the lowest ground line that still leaves `bottomPadPx` free under
+  // (a) the footprint circle the car sweeps while spinning and (b) its biggest smoke puffs, using the real camera,
+  // window size and car bounding box, so it adapts to any screen. Pixel rows below are measured from the top.
+  const camUp = new V3(), probe = new V3();
+  const projectY = (p) => ((1 - p.project(camera).y) / 2) * window.innerHeight;
+  const lowestPx = (z) => {
+    camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    const body = projectY(probe.set(0, 0, z + footRadius));
+    const smoke = projectY(probe.set(0, 0.2, z + smokeReach).addScaledVector(camUp, -SMOKE_MAX / 2));
+    return Math.max(body, smoke);
   };
+  function floorRow() { // returns the ground line as a screen-row fraction (0 = top, 1 = bottom)
+    const limit = window.innerHeight - CFG.bottomPadPx;
+    let lo = -40, hi = camera.position.z - 2; // lo: far away (high on screen); hi: beside the camera (too low)
+    for (let i = 0; i < 40; i++) {
+      const mid = (lo + hi) / 2;
+      if (lowestPx(mid) > limit) hi = mid; else lo = mid;
+    }
+    return projectY(probe.set(0, 0, lo)) / window.innerHeight;
+  }
+  // Highest screen row (px) the car's swept volume can reach while standing on the bottom line: buttons go above it.
+  const roofPx = () => projectY(probe.set(K.center.x, carHeight, K.center.z - footRadius));
+  // </layout>
 
   // <sequence>
   const YAW_LEFT = Math.PI / 2, YAW_RIGHT = 1.5 * Math.PI; // car faces -x / +x: side-on to the camera
@@ -346,11 +391,11 @@ async function startRenderer() {
   const ui = document.getElementById('choices');
   const btns = [...ui.querySelectorAll('button')];
   const setInteractive = (on) => window.companion && window.companion.interactive(on);
-  function showChoices() {
-    const a = new V3(K.center.x, 0, K.center.z + carWidth / 2 + 1).project(camera); // just below the car
-    ui.style.left = `${((a.x + 1) / 2) * window.innerWidth}px`;
-    ui.style.top = `${((1 - a.y) / 2) * window.innerHeight}px`;
-    ui.hidden = false;
+  function showChoices() { // centred above the car, clear of everything it can sweep through
+    const mid = new V3(K.center.x, 0, K.center.z).project(camera);
+    ui.hidden = false; // unhide first so the button row can be measured
+    ui.style.left = `${((mid.x + 1) / 2) * window.innerWidth}px`;
+    ui.style.top = `${Math.max(8, roofPx() - CFG.buttonGapPx - ui.offsetHeight)}px`;
   }
 
   function go(name) {
