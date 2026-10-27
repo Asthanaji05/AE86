@@ -1,0 +1,17 @@
+{
+  "name": "ae86-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Animated desktop reminder companion",
+  "main": "app.js",
+  "scripts": {
+    "start": "electron .",
+    "debug": "DEBUG=1 electron ."
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}
