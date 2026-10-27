@@ -19,7 +19,7 @@ const CFG = {
   // onto the bottom line. Its height there is NOT set here: it is solved from the window size and the car's
   // bounding box so that wheels, spinning body and smoke clear the bottom edge by `bottomPadPx`.
   start: [1.22, 0.50],
-  bottomPadPx: 16,       // free space kept under the car and its smoke
+  bottomPadPx: 6,       // free space kept under the car's near tyre edge.
   buttonGapPx: 20,       // gap between the buttons and the highest point the car can reach
   // Positions along the bottom line (x only, as screen fractions from the left): it slides and spins at
   // `drift`, drives to `center` and waits; `turn` is where it spins around on Later; the exits are just off-screen.
@@ -70,8 +70,11 @@ function startMain() {
     win.webContents.on('console-message', (...a) =>
       console.log('[renderer]', a[0] && a[0].message !== undefined ? a[0].message : a[2]));
     win.webContents.on('did-fail-load', (_e, code, desc) => console.error('[load failed]', code, desc));
-    win.webContents.on('render-process-gone', (_e, d) => { console.error('[renderer gone]', d.reason); ready = false; finish(); });
-
+    win.webContents.on('render-process-gone', (_e, d) => {
+      console.error('[renderer gone]', d.reason);
+      ready = false;
+      if (!win.isDestroyed()) finish();
+    });
     // Only accept messages from our own window; the messages carry no data.
     ipcMain.on('ready', (e) => {
       if (e.sender !== win.webContents) return;
@@ -238,10 +241,8 @@ async function startRenderer() {
     console.log(`Wheel ${name}: radius ${radius.toFixed(3)}, pivot ${centre.toArray().map((n) => n.toFixed(2)).join(', ')}`);
   }
 
-  const smokeReach = (wheels.length ? wheelReach : footRadius) + 0.7; // wheel position + sideways puff drift
-
   /* ---- smoke ---- */
-  const SMOKE_MAX = 3.6; // largest puff diameter in world units; layout keeps this much smoke on-screen
+  const SMOKE_MAX = 3.6; // largest puff diameter in world units
   const smokeTex = blob('232,232,232', 0.9);
   const puffs = Array.from({ length: 120 }, () => {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
@@ -289,30 +290,20 @@ async function startRenderer() {
     return out.copy(camera.position).addScaledVector(ray, -camera.position.y / ray.y);
   }
   const plan = () => {
-  const row = 0.90; // Test: place the car's ground line at 90% of screen height
-  K.start = groundAt(
-    CFG.start[0],
-    Math.min(CFG.start[1], row - 0.04),
-    K.start || new V3()
-  );
-
-  for (const k in CFG.floorX) {
-    K[k] = groundAt(CFG.floorX[k], row, K[k] || new V3());
-  }
-};
+    const row = floorRow();
+    K.start = groundAt(CFG.start[0], Math.min(CFG.start[1], row - 0.04), new V3());
+    for (const k in CFG.floorX) K[k] = groundAt(CFG.floorX[k], row, new V3());
+  };
 
   // <layout>
   // Where the car sits vertically. We look for the lowest ground line that still leaves `bottomPadPx` free under
-  // (a) the footprint circle the car sweeps while spinning and (b) its biggest smoke puffs, using the real camera,
-  // window size and car bounding box, so it adapts to any screen. Pixel rows below are measured from the top.
-  const camUp = new V3(), probe = new V3();
+  // the near tyre edge, using the real camera, window size and car bounding box, so it adapts to any screen.
+  // Pixel rows below are measured from the top.
+  const probe = new V3();
   const projectY = (p) => ((1 - p.project(camera).y) / 2) * window.innerHeight;
-  const lowestPx = (z) => {
-    camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-    const body = projectY(probe.set(0, 0, z + footRadius));
-    const smoke = projectY(probe.set(0, 0.2, z + smokeReach).addScaledVector(camUp, -SMOKE_MAX / 2));
-    return Math.max(body, smoke);
-  };
+  // lowest on-screen point is the near-side tyre: car's z-half-extent, not the diagonal sweep circle
+  const nearEdge = (fitted.max.z - fitted.min.z) / 2;   // ≈ 2.2, in fitted/scaled units
+  const lowestPx = (z) => projectY(probe.set(0, 0, z + nearEdge));
   function floorRow() { // returns the ground line as a screen-row fraction (0 = top, 1 = bottom)
     const limit = window.innerHeight - CFG.bottomPadPx;
     let lo = -40, hi = camera.position.z - 2; // lo: far away (high on screen); hi: beside the camera (too low)
@@ -339,45 +330,57 @@ async function startRenderer() {
   // pose(u, o): u = progress 0..1 in this state. Fills o: pos, yaw, plus m (drift intensity: smoke, lean),
   // dir (turn direction), steer (front-wheel angle), lift (nose up), burn (rear wheelspin).
   const STATES = {
-    ENTER: { dur: T_ENTER, next: 'DRIFT_TO_PROFILE', pose(u, o) {
-      glide(u * T_ENTER, o);
-      o.yaw = YAW_IN; o.dir = 1; o.steer = -0.25;
-    } },
-    DRIFT_TO_PROFILE: { dur: T_DRIFT, next: 'MOVE_TO_CENTER', pose(u, o) {
-      glide(T_ENTER + u * T_DRIFT, o);
-      o.yaw = YAW_IN + (YAW_RIGHT - YAW_IN) * ((1 - Math.cos(Math.PI * u)) / 2) + 0.12 * sin2((u - 0.65) / 0.35);
-      o.m = Math.sin(Math.PI * u); o.dir = 1; o.steer = -0.25 - 0.25 * o.m;
-    } },
-    MOVE_TO_CENTER: { dur: 1.0, next: 'WAIT_FOR_CHOICE', pose(u, o) {
-      o.pos.copy(K.drift).lerp(K.center, ease3(u));
-      o.yaw = YAW_RIGHT;
-      o.lift = 0.03 * Math.sin(Math.PI * clamp01(u / 0.45)) - 0.04 * Math.sin(Math.PI * clamp01((u - 0.55) / 0.45));
-    } },
+    ENTER: {
+      dur: T_ENTER, next: 'DRIFT_TO_PROFILE', pose(u, o) {
+        glide(u * T_ENTER, o);
+        o.yaw = YAW_IN; o.dir = 1; o.steer = -0.25;
+      }
+    },
+    DRIFT_TO_PROFILE: {
+      dur: T_DRIFT, next: 'MOVE_TO_CENTER', pose(u, o) {
+        glide(T_ENTER + u * T_DRIFT, o);
+        o.yaw = YAW_IN + (YAW_RIGHT - YAW_IN) * ((1 - Math.cos(Math.PI * u)) / 2) + 0.12 * sin2((u - 0.65) / 0.35);
+        o.m = Math.sin(Math.PI * u); o.dir = 1; o.steer = -0.25 - 0.25 * o.m;
+      }
+    },
+    MOVE_TO_CENTER: {
+      dur: 1.0, next: 'WAIT_FOR_CHOICE', pose(u, o) {
+        o.pos.copy(K.drift).lerp(K.center, ease3(u));
+        o.yaw = YAW_RIGHT;
+        o.lift = 0.03 * Math.sin(Math.PI * clamp01(u / 0.45)) - 0.04 * Math.sin(Math.PI * clamp01((u - 0.55) / 0.45));
+      }
+    },
     WAIT_FOR_CHOICE: { dur: Infinity, pose(u, o) { o.pos.copy(K.center); o.yaw = YAW_RIGHT; } },
-    EXIT_RIGHT: { dur: 1.3, next: 'DONE', pose(u, o) {
-      o.pos.copy(K.center).lerp(K.exitRight, Math.pow(u, 2.2));
-      const wig = 0.5 * sin2(u / 0.5);                       // tail kicks out, then straightens
-      o.yaw = YAW_RIGHT + wig;
-      o.m = Math.sin(Math.PI * clamp01(u / 0.55)); o.burn = o.m; o.dir = 1; o.steer = -wig;
-      o.lift = 0.05 * Math.sin(Math.PI * clamp01(u / 0.6));
-    } },
-    TURN_AROUND: { dur: 1.0, next: 'EXIT_LEFT', pose(u, o) {
-      o.pos.copy(K.center).lerp(K.turn, skew(u, 0.6));       // launch right, then slide to a stop
-      o.yaw = YAW_RIGHT - Math.PI * ease3(clamp01((u - 0.1) / 0.9));
-      o.m = Math.sin(Math.PI * u); o.burn = 0.7 * Math.sin(Math.PI * clamp01(u / 0.5)); o.dir = -1; o.steer = 0.5 * o.m;
-    } },
-    EXIT_LEFT: { dur: 1.2, next: 'DONE', pose(u, o) {
-      o.pos.copy(K.turn).lerp(K.exitLeft, Math.pow(u, 2.2));
-      o.yaw = YAW_LEFT;
-      o.m = 0.6 * Math.sin(Math.PI * clamp01(u / 0.5)); o.burn = o.m;
-      o.lift = 0.04 * Math.sin(Math.PI * clamp01(u / 0.6));
-    } },
-    DONE: { dur: Infinity, pose() {} },
+    EXIT_RIGHT: {
+      dur: 1.3, next: 'DONE', pose(u, o) {
+        o.pos.copy(K.center).lerp(K.exitRight, Math.pow(u, 2.2));
+        const wig = 0.5 * sin2(u / 0.5);                       // tail kicks out, then straightens
+        o.yaw = YAW_RIGHT + wig;
+        o.m = Math.sin(Math.PI * clamp01(u / 0.55)); o.burn = o.m; o.dir = 1; o.steer = -wig;
+        o.lift = 0.05 * Math.sin(Math.PI * clamp01(u / 0.6));
+      }
+    },
+    TURN_AROUND: {
+      dur: 1.0, next: 'EXIT_LEFT', pose(u, o) {
+        o.pos.copy(K.center).lerp(K.turn, skew(u, 0.6));       // launch right, then slide to a stop
+        o.yaw = YAW_RIGHT - Math.PI * ease3(clamp01((u - 0.1) / 0.9));
+        o.m = Math.sin(Math.PI * u); o.burn = 0.7 * Math.sin(Math.PI * clamp01(u / 0.5)); o.dir = -1; o.steer = 0.5 * o.m;
+      }
+    },
+    EXIT_LEFT: {
+      dur: 1.2, next: 'DONE', pose(u, o) {
+        o.pos.copy(K.turn).lerp(K.exitLeft, Math.pow(u, 2.2));
+        o.yaw = YAW_LEFT;
+        o.m = 0.6 * Math.sin(Math.PI * clamp01(u / 0.5)); o.burn = o.m;
+        o.lift = 0.04 * Math.sin(Math.PI * clamp01(u / 0.6));
+      }
+    },
+    DONE: { dur: Infinity, pose() { } },
   };
   // Advance the clock; a finished state rolls over into its `next`. WAIT_FOR_CHOICE and DONE never finish.
   const advance = (st, dt) => {
     st.t += dt;
-    for (let s; st.t >= (s = STATES[st.name]).dur; ) { st.t -= s.dur; st.name = s.next; }
+    for (let s; st.t >= (s = STATES[st.name]).dur;) { st.t -= s.dur; st.name = s.next; }
   };
   // </sequence>
 
