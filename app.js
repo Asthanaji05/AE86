@@ -35,22 +35,46 @@ else startRenderer().catch((e) => console.error('FATAL', e));
 function startMain() {
   const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain } = require('electron');
   const path = require('path');
+  const { Analytics } = require('./analytics');
   const KEY_DRIFT = 'CommandOrControl+Alt+Shift+D';
   const KEY_QUIT = 'CommandOrControl+Alt+Q';
-  let win, tray, ready = false, busy = false;
+  let win, tray, ready, dashWin = null, busy = false;
+  let analytics;
 
-  function drift() {
+
+  function drift(reminder) {
     if (!ready || busy) return;
+    const payload =
+      reminder && typeof reminder === 'object' && typeof reminder.type === 'string'
+        ? { type: reminder.type }
+        : { type: 'default' };
     busy = true;
     win.setBounds(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.showInactive();
-    setTimeout(() => win.webContents.send('drift'), 80); // let the window finish resizing first
+    setTimeout(() => win.webContents.send('drift', payload), 80);
   }
   function finish() {
     busy = false;
     win.setIgnoreMouseEvents(true, { forward: true }); // always return to click-through
     win.hide(); // overlay disappears completely when idle
+  }
+  function openDashboard() {
+    if (dashWin && !dashWin.isDestroyed()) {
+    if (dashWin.isMinimized()) dashWin.restore();
+    dashWin.focus();
+    return;
+  }
+    dashWin = new BrowserWindow({
+      width: 1100, height: 780, minWidth: 720, minHeight: 560,
+      title: 'AE86 Companion — Insights',
+      webPreferences: { preload: __filename, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    dashWin.removeMenu?.();
+    dashWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    dashWin.webContents.on('will-navigate', (e) => e.preventDefault());
+    dashWin.loadFile(path.join(__dirname, 'dashboard.html'));
+    dashWin.on('closed', () => { dashWin = null; });
   }
 
   app.whenReady().then(() => {
@@ -60,6 +84,7 @@ function startMain() {
       focusable: false, acceptFirstMouse: true, skipTaskbar: true, alwaysOnTop: true, show: false,
       webPreferences: { preload: __filename, contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
+    analytics = new Analytics(app.getPath('userData'));
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.setIgnoreMouseEvents(true, { forward: true }); // click-through, but mouse moves still reach the page
@@ -89,6 +114,14 @@ function startMain() {
       if (on) win.setIgnoreMouseEvents(false);
       else win.setIgnoreMouseEvents(true, { forward: true });
     });
+    ipcMain.on('analytics:log', (e, rec) => {
+      if (e.sender !== win.webContents) return;
+      analytics.log(rec || {});
+      if (dashWin && !dashWin.isDestroyed()) dashWin.webContents.send('analytics:refresh');
+    });
+    ipcMain.handle('analytics:get', (e) =>
+      e.sender === win.webContents || (dashWin && e.sender === dashWin.webContents)
+        ? analytics.snapshot() : null);
 
     win.loadFile(path.join(__dirname, 'index.html'));
     if (process.env.DEBUG) win.webContents.openDevTools({ mode: 'detach' });
@@ -99,6 +132,7 @@ function startMain() {
       tray.setToolTip('AE86 Companion');
       tray.setContextMenu(Menu.buildFromTemplate([
         { label: 'Drift now', click: drift },
+        { label: 'Insights…', click: openDashboard },
         { label: 'Quit', click: () => app.quit() },
       ]));
     } catch (err) { console.warn('Tray unavailable:', err.message); }
@@ -116,10 +150,13 @@ function startMain() {
 function startPreload() {
   const { contextBridge, ipcRenderer } = require('electron');
   contextBridge.exposeInMainWorld('companion', {
-    onDrift: (cb) => ipcRenderer.on('drift', () => cb()), // the raw event is never passed to the page
+    onDrift: (cb) => ipcRenderer.on('drift', (_e, payload) => cb(payload)),
     ready: () => ipcRenderer.send('ready'),
     done: () => ipcRenderer.send('done'),
     interactive: (on) => ipcRenderer.send('interactive', !!on),
+    logReminder: (rec) => ipcRenderer.send('analytics:log', rec),
+    getAnalytics: () => ipcRenderer.invoke('analytics:get'),
+    onAnalyticsRefresh: (cb) => ipcRenderer.on('analytics:refresh', () => cb()),
   });
 }
 
@@ -389,6 +426,8 @@ async function startRenderer() {
   const pose = { pos: new V3(), yaw: 0, m: 0, dir: 0, steer: 0, lift: 0, burn: 0 };
   const prev = new V3(), step = new V3(), fwd = new V3();
   let steerNow = 0, running = false, locked = false, raf = 0, last = 0;
+  let currentType = 'default';
+  let reminderTriggeredAt = 0;
 
   // Reminder buttons. The window is click-through; it only listens to the mouse while the pointer is on a button.
   const ui = document.getElementById('choices');
@@ -449,10 +488,16 @@ async function startRenderer() {
   }
 
   function choose(next) {
-    if (S.name !== 'WAIT_FOR_CHOICE' || locked) return; // ignores repeat clicks and early clicks
+    if (S.name !== 'WAIT_FOR_CHOICE' || locked) return;
     locked = true;
     btns.forEach((b) => (b.disabled = true));
-    setInteractive(false);                              // click-through again right away
+    setInteractive(false);
+    window.companion?.logReminder({
+      type: currentType,
+      status: next === 'EXIT_RIGHT' ? 'completed' : 'postponed',
+      triggeredAt: reminderTriggeredAt,
+      respondedAt: Date.now(),
+    });
     go(next);
     last = performance.now();
     schedule();
@@ -464,13 +509,18 @@ async function startRenderer() {
     b.addEventListener('mouseleave', () => setInteractive(false));
   }
 
-  function start() {
+  function start(payload) {
     if (running) return;
     running = true;
     locked = false;
     steerNow = 0;
     smokeClock = 0;
-    placeCamera(); // the window may have just moved to another display
+    currentType =
+      payload && typeof payload.type === 'string' && payload.type
+        ? payload.type.slice(0, 64)
+        : 'default';
+    reminderTriggeredAt = Date.now();
+    placeCamera();
     plan();
     ui.hidden = true;
     btns.forEach((b) => (b.disabled = false));
