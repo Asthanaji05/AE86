@@ -267,6 +267,18 @@
       color: var(--red);
     }
 
+    .pill.snoozed {
+      color: var(--yellow);
+    }
+
+    .pill.skipped {
+      color: #a1a5b3;
+    }
+
+    .pill.custom {
+      color: #b8f34a;
+    }
+
     .foot {
       color: var(--muted);
       font-size: 12px;
@@ -393,9 +405,8 @@
     function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
     function render() {
       const events = selectedEvents();
-      const counts = { completed: 0, postponed: 0, missed: 0, pending: 0 };
-      events.forEach(e => { counts[e.status] = (counts[e.status] || 0) + 1; });
-      const resolved = counts.completed + counts.postponed + counts.missed;
+      const counts = { completed: 0, postponed: 0, snoozed: 0, skipped: 0, custom: 0, missed: 0, pending: 0 };
+      const resolved = counts.completed + counts.postponed + counts.snoozed + counts.skipped + counts.custom + counts.missed;
       const answered = events.filter(e => e.responseMs != null && Number.isFinite(Number(e.responseMs))).map(e => Number(e.responseMs));
       const avg = answered.length ? answered.reduce((a, b) => a + b, 0) / answered.length : null;
       $('total').textContent = events.length;

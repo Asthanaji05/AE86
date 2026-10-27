@@ -60,3 +60,11 @@ You can tweak the animation, physics, and layout by editing the `CFG` object at 
 ## Dependencies
 - [Electron](https://www.electronjs.org/)
 - [Three.js](https://threejs.org/)
+
+
+## Custom Reminders & Scheduling
+You can configure up to 4 custom reminders via the **Settings…** tray menu. 
+- **Scheduling:** Choose between manual only, daily, specific days, or recurring intervals.
+- **Actions:** Choose up to 4 actions (`Complete`, `Snooze`, `Skip`, `Custom`) that will appear as a horizontal row above the car when the reminder fires.
+
+Data is saved locally in `reminders.json` inside your OS's standard `userData` folder.

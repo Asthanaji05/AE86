@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AE86 Companion — Settings</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101116;
+      --panel: #191b23;
+      --border: #2a2d38;
+      --text: #f4f5f8;
+      --muted: #a1a5b3;
+      --accent: #b8f34a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, sans-serif;
+      padding: 28px;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 24px;
+    }
+
+    .reminder {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      position: relative;
+    }
+
+    .row {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+
+    .col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    input,
+    select {
+      background: #222530;
+      color: #fff;
+      border: 1px solid var(--border);
+      padding: 8px;
+      border-radius: 6px;
+      font: inherit;
+    }
+
+    .actions-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .actions-group label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    button {
+      background: var(--accent);
+      color: #171a10;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.delete {
+      background: #ff7272;
+      color: #fff;
+      padding: 6px 12px;
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      font-size: 12px;
+    }
+
+    button.add {
+      background: transparent;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      width: 100%;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+
+    button.add:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: #fff;
+    }
+
+    .save-bar {
+      position: sticky;
+      bottom: 0;
+      padding: 16px 0;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      text-align: right;
+    }
+
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--accent);
+      color: #000;
+      padding: 10px 20px;
+      border-radius: 99px;
+      font-weight: bold;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .3s;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Custom Reminders</h1>
+  <div id="list"></div>
+  <button class="add" id="addBtn">+ Add Reminder</button>
+
+  <div class="save-bar">
+    <button id="saveBtn">Save All Changes</button>
+  </div>
+  <div id="toast">Saved!</div>
+
+  <script>
+    let reminders = [];
+    const listEl = document.getElementById('list');
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    async function init() {
+      reminders = await window.companion.getReminders() || [];
+      if (reminders.length === 0) addReminder(); else render();
+    }
+
+    function render() {
+      listEl.innerHTML = '';
+      reminders.forEach((r, i) => {
+        const div = document.createElement('div');
+        div.className = 'reminder';
+
+        let scheduleOpts = `
+          <option value="manual" ${r.schedule === 'manual' ? 'selected' : ''}>Manual trigger only</option>
+          <option value="daily" ${r.schedule === 'daily' ? 'selected' : ''}>Every day</option>
+          <option value="specific_days" ${r.schedule === 'specific_days' ? 'selected' : ''}>Specific days</option>
+          <option value="interval" ${r.schedule === 'interval' ? 'selected' : ''}>Recurring hours (from midnight)</option>
+        `;
+
+        let daysHtml = '';
+        if (r.schedule === 'specific_days') {
+          daysHtml = `<div style="margin-top:8px;">${days.map((d, di) => `
+            <label style="display:inline-block; margin-right:8px; color:#fff;">
+              <input type="checkbox" value="${di}" ${r.days && r.days.includes(di) ? 'checked' : ''} onchange="updateDay(${i}, ${di}, this.checked)"> ${d}
+            </label>
+          `).join('')}</div>`;
+        }
+
+        let intervalHtml = '';
+        if (r.schedule === 'interval') {
+          intervalHtml = `<div style="margin-top:8px;"><label>Every <input type="number" min="1" max="12" value="${r.intervalHours || 2}" onchange="updateField(${i}, 'intervalHours', parseInt(this.value))" style="width:60px"> hours</label></div>`;
+        }
+
+        div.innerHTML = `
+          <button class="delete" onclick="deleteReminder(${i})">Delete</button>
+          <div class="row">
+            <div class="col">
+              <label>Reminder Name</label>
+              <input type="text" value="${r.title || ''}" onchange="updateField(${i}, 'title', this.value)">
+            </div>
+            <div class="col">
+              <label>Trigger Type</label>
+              <input type="text" value="${r.type || ''}" onchange="updateField(${i}, 'type', this.value)" placeholder="e.g. hydration">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label>Schedule</label>
+              <select onchange="updateField(${i}, 'schedule', this.value)">
+                ${scheduleOpts}
+              </select>
+            </div>
+            <div class="col">
+              <label>Time (HH:MM, 24hr)</label>
+              <input type="time" value="${r.time || '12:00'}" onchange="updateField(${i}, 'time', this.value)">
+            </div>
+          </div>
+          ${daysHtml}
+          ${intervalHtml}
+          
+          <div class="row" style="margin-top:16px;">
+            <div class="col">
+              <label>Action Buttons (Max 4)</label>
+              <div class="actions-group">
+                <label><input type="checkbox" value="completed" ${r.actions?.includes('completed') ? 'checked' : ''} onchange="toggleAction(${i}, 'completed', this.checked)"> Complete</label>
+                <label><input type="checkbox" value="postponed" ${r.actions?.includes('postponed') ? 'checked' : ''} onchange="toggleAction(${i}, 'postponed', this.checked)"> Snooze</label>
+                <label><input type="checkbox" value="skipped" ${r.actions?.includes('skipped') ? 'checked' : ''} onchange="toggleAction(${i}, 'skipped', this.checked)"> Skip</label>
+                <label><input type="checkbox" value="custom" ${r.actions?.includes('custom') ? 'checked' : ''} onchange="toggleAction(${i}, 'custom', this.checked)"> Custom</label>
+              </div>
+            </div>
+          </div>
+        `;
+        listEl.appendChild(div);
+      });
+    }
+
+    window.updateField = (i, field, val) => {
+      reminders[i][field] = val;
+      if (field === 'schedule') render();
+      // Automatically save so the Tray menu stays in sync
+      window.companion.saveReminders(reminders);
+    };
+
+    window.updateDay = (i, day, checked) => {
+      if (!reminders[i].days) reminders[i].days = [];
+      if (checked && !reminders[i].days.includes(day)) reminders[i].days.push(day);
+      if (!checked) reminders[i].days = reminders[i].days.filter(d => d !== day);
+    };
+
+    window.toggleAction = (i, action, checked) => {
+      if (!reminders[i].actions) reminders[i].actions = [];
+      if (checked && !reminders[i].actions.includes(action)) reminders[i].actions.push(action);
+      if (!checked) reminders[i].actions = reminders[i].actions.filter(a => a !== action);
+    };
+
+    window.deleteReminder = (i) => {
+      reminders.splice(i, 1);
+      render();
+    };
+
+    function addReminder() {
+      if (reminders.length >= 4) return alert('Maximum of 4 reminders allowed.');
+      reminders.push({ id: 'r_' + Date.now(), title: 'New Reminder', type: 'general', schedule: 'manual', time: '12:00', actions: ['completed', 'postponed'] });
+      render();
+    }
+
+    document.getElementById('addBtn').onclick = addReminder;
+    document.getElementById('saveBtn').onclick = () => {
+      window.companion.saveReminders(reminders);
+      const toast = document.getElementById('toast');
+      toast.style.opacity = '1';
+      setTimeout(() => toast.style.opacity = '0', 2000);
+    };
+
+    init();
+  </script>
+</body>
+
+</html>

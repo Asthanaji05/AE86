@@ -1,28 +1,22 @@
 'use strict';
 /*
- * AE86 Desktop Companion - Milestone 3 (reminder sequence: drift in, ask, drive away)
+ * AE86 Desktop Companion - Milestone 4 (Custom Reminders)
  * One file, three roles. Electron runs it as:
- *   MAIN     (process.type === 'browser')  window, tray, shortcuts, show/hide
+ *   MAIN     (process.type === 'browser')  window, tray, shortcuts, show/hide, scheduler
  *   PRELOAD  (process.type === 'renderer') tiny, safe bridge exposed to the page
  *   PAGE     (no `process` at all)         Three.js scene and animation
  * The page never gets Node access: context isolation and the sandbox stay on.
  */
 const MODEL_FILE = 'assets/toyota_trueno_ae86_initial_d.glb';
 
-// Everything you may want to tweak lives here.
 const CFG = {
-  carLength: 4.4,        // world units; with viewWidth this sets the car's on-screen size
-  viewWidth: 20,         // world units visible across the screen at the car's distance
+  carLength: 4.4,
+  viewWidth: 20,
   fov: 28,
-  elevationDeg: 35,      // camera looks down at the "road" from this angle
-  // The car appears at `start` (x, y as screen fractions: off the right edge, mid-height) and slides down
-  // onto the bottom line. Its height there is NOT set here: it is solved from the window size and the car's
-  // bounding box so that wheels, spinning body and smoke clear the bottom edge by `bottomPadPx`.
+  elevationDeg: 35,
   start: [1.22, 0.50],
-  bottomPadPx: 6,       // free space kept under the car's near tyre edge.
-  buttonGapPx: 20,       // gap between the buttons and the highest point the car can reach
-  // Positions along the bottom line (x only, as screen fractions from the left): it slides and spins at
-  // `drift`, drives to `center` and waits; `turn` is where it spins around on Later; the exits are just off-screen.
+  bottomPadPx: 6,
+  buttonGapPx: 20,
   floorX: { drift: 0.26, center: 0.50, turn: 0.64, exitRight: 1.28, exitLeft: -0.28 },
 };
 
@@ -31,40 +25,44 @@ if (role === 'main') startMain();
 else if (role === 'preload') startPreload();
 else startRenderer().catch((e) => console.error('FATAL', e));
 
+
 /* ------------------------------ MAIN PROCESS ------------------------------ */
 function startMain() {
   const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain } = require('electron');
   const path = require('path');
   const { Analytics } = require('./analytics');
+  const { Reminders } = require('./reminders');
+
   const KEY_DRIFT = 'CommandOrControl+Alt+Shift+D';
   const KEY_QUIT = 'CommandOrControl+Alt+Q';
-  let win, tray, ready, dashWin = null, busy = false;
-  let analytics;
-
-
+  let win, tray, ready, dashWin = null, settingsWin = null, busy = false;
+  let analytics, remindersData;
+  let checkInterval = null;
+  let lastTriggeredKey = null;
   function drift(reminder) {
     if (!ready || busy) return;
-    const payload =
-      reminder && typeof reminder === 'object' && typeof reminder.type === 'string'
-        ? { type: reminder.type }
-        : { type: 'default' };
+    const activeReminder = reminder || { id: 'demo', title: 'Default', type: 'default', actions: ['completed', 'postponed'] };
+
+
     busy = true;
     win.setBounds(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.showInactive();
-    setTimeout(() => win.webContents.send('drift', payload), 80);
+    setTimeout(() => win.webContents.send('drift', activeReminder), 80);
   }
+
   function finish() {
     busy = false;
-    win.setIgnoreMouseEvents(true, { forward: true }); // always return to click-through
-    win.hide(); // overlay disappears completely when idle
+    win.setIgnoreMouseEvents(true, { forward: true });
+    win.hide();
   }
+
   function openDashboard() {
     if (dashWin && !dashWin.isDestroyed()) {
-    if (dashWin.isMinimized()) dashWin.restore();
-    dashWin.focus();
-    return;
-  }
+      if (dashWin.isMinimized()) dashWin.restore();
+      dashWin.focus();
+      return;
+    }
     dashWin = new BrowserWindow({
       width: 1100, height: 780, minWidth: 720, minHeight: 560,
       title: 'AE86 Companion — Insights',
@@ -77,6 +75,84 @@ function startMain() {
     dashWin.on('closed', () => { dashWin = null; });
   }
 
+  function openSettings() {
+    if (settingsWin && !settingsWin.isDestroyed()) {
+      if (settingsWin.isMinimized()) settingsWin.restore();
+      settingsWin.focus();
+      return;
+    }
+    settingsWin = new BrowserWindow({
+      width: 800, height: 600, minWidth: 600, minHeight: 500,
+      title: 'AE86 Companion — Settings',
+      webPreferences: { preload: __filename, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    settingsWin.removeMenu?.();
+    settingsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    settingsWin.webContents.on('will-navigate', (e) => e.preventDefault());
+    settingsWin.loadFile(path.join(__dirname, 'settings.html'));
+    settingsWin.on('closed', () => { settingsWin = null; });
+  }
+
+  function updateTrayMenu() {
+    if (!tray) return;
+    const list = remindersData.getAll();
+
+    // Create a menu item for each reminder
+    const reminderItems = list.map(r => ({
+      label: `Drift: ${r.title || 'Untitled'}`,
+      click: () => drift(r)
+    }));
+
+    // If no reminders exist, add a disabled placeholder
+    if (reminderItems.length === 0) {
+      reminderItems.push({ label: 'No reminders configured', enabled: false });
+    }
+
+    const template = [
+      { label: 'Trigger Default', click: () => drift() }, // Uses fallback
+      { type: 'separator' },
+      ...reminderItems, // Injects your specific reminders here
+      { type: 'separator' },
+      { label: 'Settings…', click: openSettings },
+      { label: 'Insights…', click: openDashboard },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() },
+    ];
+
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+  }
+
+  // Scheduler logic
+  function checkSchedule() {
+    if (busy) return;
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    const due = remindersData.getAll().find(r => {
+      if (r.schedule === 'manual') return false;
+      if (r.time !== timeStr) return false;
+
+      const key = `${r.id}_${now.toDateString()}_${timeStr}`;
+      if (key === lastTriggeredKey) return false;
+
+      if (r.schedule === 'daily') return true;
+      if (r.schedule === 'specific_days' && Array.isArray(r.days)) {
+        return r.days.includes(now.getDay()); // 0 = Sunday
+      }
+      if (r.schedule === 'interval') {
+        // simple interval from midnight (r.intervalHours)
+        const hoursSinceMidnight = now.getHours() + now.getMinutes() / 60;
+        return hoursSinceMidnight % r.intervalHours === 0 && now.getMinutes() === 0;
+      }
+      return false;
+    });
+
+    if (due) {
+      lastTriggeredKey = `${due.id}_${now.toDateString()}_${timeStr}`;
+      drift(due);
+    }
+  }
+
   app.whenReady().then(() => {
     win = new BrowserWindow({
       ...screen.getPrimaryDisplay().workArea,
@@ -84,11 +160,14 @@ function startMain() {
       focusable: false, acceptFirstMouse: true, skipTaskbar: true, alwaysOnTop: true, show: false,
       webPreferences: { preload: __filename, contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
+
     analytics = new Analytics(app.getPath('userData'));
+    remindersData = new Reminders(app.getPath('userData'));
+
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    win.setIgnoreMouseEvents(true, { forward: true }); // click-through, but mouse moves still reach the page
-    if (app.dock) app.dock.hide();  // menu-bar style app: no Dock icon
+    win.setIgnoreMouseEvents(true, { forward: true });
+    if (app.dock) app.dock.hide();
 
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e) => e.preventDefault());
@@ -100,28 +179,39 @@ function startMain() {
       ready = false;
       if (!win.isDestroyed()) finish();
     });
-    // Only accept messages from our own window; the messages carry no data.
+
     ipcMain.on('ready', (e) => {
       if (e.sender !== win.webContents) return;
       ready = true;
       console.log(`Ready. Trigger: ${KEY_DRIFT} or the menu-bar car. Quit: ${KEY_QUIT}.`);
-      drift(); // one demo run at startup
     });
+
     ipcMain.on('done', (e) => { if (e.sender === win.webContents) finish(); });
-    // The page asks for real mouse input only while the pointer is over a button.
+
     ipcMain.on('interactive', (e, on) => {
       if (e.sender !== win.webContents || typeof on !== 'boolean') return;
       if (on) win.setIgnoreMouseEvents(false);
       else win.setIgnoreMouseEvents(true, { forward: true });
     });
+
     ipcMain.on('analytics:log', (e, rec) => {
       if (e.sender !== win.webContents) return;
       analytics.log(rec || {});
       if (dashWin && !dashWin.isDestroyed()) dashWin.webContents.send('analytics:refresh');
     });
+
     ipcMain.handle('analytics:get', (e) =>
       e.sender === win.webContents || (dashWin && e.sender === dashWin.webContents)
         ? analytics.snapshot() : null);
+
+    ipcMain.handle('reminders:get', (e) =>
+      e.sender === settingsWin?.webContents ? remindersData.getAll() : null);
+
+    ipcMain.on('reminders:save', (e, list) => {
+      if (e.sender !== settingsWin?.webContents) return;
+      remindersData.saveAll(list);
+      updateTrayMenu(); // Refresh tray menu instantly
+    });
 
     win.loadFile(path.join(__dirname, 'index.html'));
     if (process.env.DEBUG) win.webContents.openDevTools({ mode: 'detach' });
@@ -130,23 +220,24 @@ function startMain() {
       tray = new Tray(nativeImage.createEmpty());
       tray.setTitle('\u{1F3CE}');
       tray.setToolTip('AE86 Companion');
-      tray.setContextMenu(Menu.buildFromTemplate([
-        { label: 'Drift now', click: drift },
-        { label: 'Insights…', click: openDashboard },
-        { label: 'Quit', click: () => app.quit() },
-      ]));
+      updateTrayMenu(); // Build the initial menu
     } catch (err) { console.warn('Tray unavailable:', err.message); }
 
-    if (!globalShortcut.register(KEY_DRIFT, drift)) console.warn('Could not register', KEY_DRIFT);
+    if (!globalShortcut.register(KEY_DRIFT, () => drift())) console.warn('Could not register', KEY_DRIFT);
     if (!globalShortcut.register(KEY_QUIT, () => app.quit())) console.warn('Could not register', KEY_QUIT);
+
+    // Check schedule every 30 seconds
+    checkInterval = setInterval(checkSchedule, 30000);
   });
 
-  app.on('will-quit', () => globalShortcut.unregisterAll());
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    if (checkInterval) clearInterval(checkInterval);
+  });
   app.on('window-all-closed', () => app.quit());
 }
 
 /* --------------------------------- PRELOAD -------------------------------- */
-// The only things the page can do: hear "drift", say "ready" / "done", and ask for mouse input over a button.
 function startPreload() {
   const { contextBridge, ipcRenderer } = require('electron');
   contextBridge.exposeInMainWorld('companion', {
@@ -157,6 +248,10 @@ function startPreload() {
     logReminder: (rec) => ipcRenderer.send('analytics:log', rec),
     getAnalytics: () => ipcRenderer.invoke('analytics:get'),
     onAnalyticsRefresh: (cb) => ipcRenderer.on('analytics:refresh', () => cb()),
+    // Settings bridges
+    getReminders: () => ipcRenderer.invoke('reminders:get'),
+    saveReminders: (list) => ipcRenderer.send('reminders:save', list),
+
   });
 }
 
@@ -170,9 +265,7 @@ async function startRenderer() {
   const { RoomEnvironment } = await import('three/addons/environments/RoomEnvironment.js');
   const V3 = THREE.Vector3;
   const rnd = (a, b) => a + Math.random() * (b - a);
-  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
-  /* ---- renderer, scene, light, camera ---- */
   const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('scene'), alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -188,7 +281,7 @@ async function startRenderer() {
 
   const camera = new THREE.PerspectiveCamera(CFG.fov, 1, 1, 200);
   const render = () => renderer.render(scene, camera);
-  // Camera looks at the origin from above-front; distance is chosen so ~viewWidth units span the screen.
+
   function placeCamera() {
     camera.aspect = window.innerWidth / window.innerHeight;
     const D = CFG.viewWidth / (2 * Math.tan(THREE.MathUtils.degToRad(CFG.fov / 2)) * camera.aspect);
@@ -208,7 +301,6 @@ async function startRenderer() {
   window.addEventListener('resize', resize);
   resize();
 
-  /* ---- soft blobs (shadow + smoke), generated in code: no extra assets ---- */
   const blob = (rgb, alpha) => {
     const c = document.createElement('canvas');
     c.width = c.height = 64;
@@ -223,16 +315,11 @@ async function startRenderer() {
     return t;
   };
 
-  /* ---- load + inspect the model ---- */
   const gltf = await new GLTFLoader().loadAsync(new URL(MODEL_FILE, location.href).href);
   const body = gltf.scene;
   body.updateMatrixWorld(true);
   const rawSize = new THREE.Box3().setFromObject(body).getSize(new V3());
-  console.log('Model size:', rawSize.toArray().map((n) => n.toFixed(3)).join(' x '),
-    '| clips:', gltf.animations.map((a) => `${a.name || '(unnamed)'} ${a.duration.toFixed(2)}s`).join(', ') || 'none (we animate in code)');
 
-  // Rig: car (path position + heading) > tilt (pitch/roll) > body (the model).
-  // Scale to a real-car size, centre on the origin, and sit the tyres on y = 0.
   body.scale.setScalar(CFG.carLength / rawSize.z);
   body.updateMatrixWorld(true);
   const fitted = new THREE.Box3().setFromObject(body);
@@ -242,8 +329,8 @@ async function startRenderer() {
   car.add(tilt);
   scene.add(car);
   car.updateMatrixWorld(true);
+
   const carWidth = fitted.max.x - fitted.min.x;
-  // Bounding-box facts used for layout: height, and the radius of the footprint circle swept by a spinning car.
   const carHeight = fitted.max.y - fitted.min.y;
   const footRadius = Math.hypot(carWidth, fitted.max.z - fitted.min.z) / 2;
 
@@ -255,13 +342,11 @@ async function startRenderer() {
   shadow.scale.set(carWidth * 1.9, CFG.carLength * 1.35, 1);
   car.add(shadow);
 
-  // Wheels: put each wheel group on its own pivot at the tyre centre, so it spins in place
-  // (steer pivot -> spin pivot -> wheel). The model faces -z with its axles along x.
   const wheels = [];
-  let wheelReach = 0; // how far the outer tyre edges are from the car's centre (smoke starts there)
+  let wheelReach = 0;
   for (const [name, rear] of [['fl', false], ['fr', false], ['rl', true], ['rr', true]]) {
     const group = body.getObjectByName(name);
-    if (!group) { console.warn('Wheel group not found:', name); continue; }
+    if (!group) continue;
     const tyre = body.getObjectByName(`${name}_tyre_0`) || group;
     const tb = new THREE.Box3().setFromObject(tyre);
     const wc = tb.getCenter(new V3());
@@ -272,14 +357,12 @@ async function startRenderer() {
     body.add(steer);
     steer.add(spin);
     body.updateMatrixWorld(true);
-    spin.attach(group); // keeps the wheel exactly where it was
+    spin.attach(group);
     const radius = (tb.max.y - tb.min.y) / 2;
     wheels.push({ steer: rear ? null : steer, spin, rear, radius });
-    console.log(`Wheel ${name}: radius ${radius.toFixed(3)}, pivot ${centre.toArray().map((n) => n.toFixed(2)).join(', ')}`);
   }
 
-  /* ---- smoke ---- */
-  const SMOKE_MAX = 3.6; // largest puff diameter in world units
+  const SMOKE_MAX = 3.6;
   const smokeTex = blob('232,232,232', 0.9);
   const puffs = Array.from({ length: 120 }, () => {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
@@ -289,6 +372,7 @@ async function startRenderer() {
   });
   let puffNext = 0, smokeClock = 0;
   const rearSpins = wheels.filter((w) => w.rear).map((w) => w.spin);
+
   function emitPuff(from) {
     const s = puffs[puffNext++ % puffs.length];
     from.getWorldPosition(s.position);
@@ -299,6 +383,7 @@ async function startRenderer() {
     });
     s.visible = true;
   }
+
   function updateSmoke(dt, emitting) {
     if (emitting) {
       smokeClock += dt;
@@ -319,60 +404,47 @@ async function startRenderer() {
     return alive;
   }
 
-  /* ---- the sequence: a small state machine with one pose function per state ---- */
-  const K = {}; // key points on the ground plane, planned from CFG (screen fractions + the solved bottom line) at each start
+  const K = {};
   const ray = new V3();
   function groundAt(fx, fy, out) {
     ray.set(fx * 2 - 1, 1 - fy * 2, 0.5).unproject(camera).sub(camera.position);
     return out.copy(camera.position).addScaledVector(ray, -camera.position.y / ray.y);
   }
+
   const plan = () => {
     const row = floorRow();
     K.start = groundAt(CFG.start[0], Math.min(CFG.start[1], row - 0.04), new V3());
     for (const k in CFG.floorX) K[k] = groundAt(CFG.floorX[k], row, new V3());
   };
 
-  // <layout>
-  // Where the car sits vertically. We look for the lowest ground line that still leaves `bottomPadPx` free under
-  // the near tyre edge, using the real camera, window size and car bounding box, so it adapts to any screen.
-  // Pixel rows below are measured from the top.
   const probe = new V3();
   const projectY = (p) => ((1 - p.project(camera).y) / 2) * window.innerHeight;
-  // lowest on-screen point is the near-side tyre: car's z-half-extent, not the diagonal sweep circle
-  const nearEdge = (fitted.max.z - fitted.min.z) / 2;   // ≈ 2.2, in fitted/scaled units
+  const nearEdge = (fitted.max.z - fitted.min.z) / 2;
   const lowestPx = (z) => projectY(probe.set(0, 0, z + nearEdge));
-  function floorRow() { // returns the ground line as a screen-row fraction (0 = top, 1 = bottom)
+
+  function floorRow() {
     const limit = window.innerHeight - CFG.bottomPadPx;
-    let lo = -40, hi = camera.position.z - 2; // lo: far away (high on screen); hi: beside the camera (too low)
+    let lo = -40, hi = camera.position.z - 2;
     for (let i = 0; i < 40; i++) {
       const mid = (lo + hi) / 2;
       if (lowestPx(mid) > limit) hi = mid; else lo = mid;
     }
     return projectY(probe.set(0, 0, lo)) / window.innerHeight;
   }
-  // Highest screen row (px) the car's swept volume can reach while standing on the bottom line: buttons go above it.
-  const roofPx = () => projectY(probe.set(K.center.x, carHeight, K.center.z - footRadius));
-  // </layout>
 
-  // <sequence>
-  const YAW_LEFT = Math.PI / 2, YAW_RIGHT = 1.5 * Math.PI; // car faces -x / +x: side-on to the camera
-  const YAW_IN = YAW_LEFT + 0.5;                            // nose slightly toward the camera on entry
+  const roofPx = () => projectY(probe.set(K.center.x, carHeight, K.center.z - footRadius));
+
+  const YAW_LEFT = Math.PI / 2, YAW_RIGHT = 1.5 * Math.PI;
+  const YAW_IN = YAW_LEFT + 0.5;
   const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
   const ease3 = (u) => u * u * (3 - 2 * u);
-  const skew = (u, k) => ease3(Math.pow(u, k));             // k < 1: quick launch, long glide
+  const skew = (u, k) => ease3(Math.pow(u, k));
   const sin2 = (x) => Math.pow(Math.sin(Math.PI * clamp01(x)), 2);
   const T_ENTER = 0.55, T_DRIFT = 1.15;
-  // ENTER and DRIFT share one decelerating slide, so speed is continuous across their boundary.
   const glide = (t, o) => o.pos.copy(K.start).lerp(K.drift, 1 - Math.pow(1 - t / (T_ENTER + T_DRIFT), 2));
-  // pose(u, o): u = progress 0..1 in this state. Fills o: pos, yaw, plus m (drift intensity: smoke, lean),
-  // dir (turn direction), steer (front-wheel angle), lift (nose up), burn (rear wheelspin).
+
   const STATES = {
-    ENTER: {
-      dur: T_ENTER, next: 'DRIFT_TO_PROFILE', pose(u, o) {
-        glide(u * T_ENTER, o);
-        o.yaw = YAW_IN; o.dir = 1; o.steer = -0.25;
-      }
-    },
+    ENTER: { dur: T_ENTER, next: 'DRIFT_TO_PROFILE', pose(u, o) { glide(u * T_ENTER, o); o.yaw = YAW_IN; o.dir = 1; o.steer = -0.25; } },
     DRIFT_TO_PROFILE: {
       dur: T_DRIFT, next: 'MOVE_TO_CENTER', pose(u, o) {
         glide(T_ENTER + u * T_DRIFT, o);
@@ -391,7 +463,7 @@ async function startRenderer() {
     EXIT_RIGHT: {
       dur: 1.3, next: 'DONE', pose(u, o) {
         o.pos.copy(K.center).lerp(K.exitRight, Math.pow(u, 2.2));
-        const wig = 0.5 * sin2(u / 0.5);                       // tail kicks out, then straightens
+        const wig = 0.5 * sin2(u / 0.5);
         o.yaw = YAW_RIGHT + wig;
         o.m = Math.sin(Math.PI * clamp01(u / 0.55)); o.burn = o.m; o.dir = 1; o.steer = -wig;
         o.lift = 0.05 * Math.sin(Math.PI * clamp01(u / 0.6));
@@ -399,7 +471,7 @@ async function startRenderer() {
     },
     TURN_AROUND: {
       dur: 1.0, next: 'EXIT_LEFT', pose(u, o) {
-        o.pos.copy(K.center).lerp(K.turn, skew(u, 0.6));       // launch right, then slide to a stop
+        o.pos.copy(K.center).lerp(K.turn, skew(u, 0.6));
         o.yaw = YAW_RIGHT - Math.PI * ease3(clamp01((u - 0.1) / 0.9));
         o.m = Math.sin(Math.PI * u); o.burn = 0.7 * Math.sin(Math.PI * clamp01(u / 0.5)); o.dir = -1; o.steer = 0.5 * o.m;
       }
@@ -414,28 +486,43 @@ async function startRenderer() {
     },
     DONE: { dur: Infinity, pose() { } },
   };
-  // Advance the clock; a finished state rolls over into its `next`. WAIT_FOR_CHOICE and DONE never finish.
+
   const advance = (st, dt) => {
     st.t += dt;
     for (let s; st.t >= (s = STATES[st.name]).dur;) { st.t -= s.dur; st.name = s.next; }
   };
-  // </sequence>
 
-  /* ---- runner: frames are drawn only while something moves ---- */
   const S = { name: 'DONE', t: 0 };
   const pose = { pos: new V3(), yaw: 0, m: 0, dir: 0, steer: 0, lift: 0, burn: 0 };
   const prev = new V3(), step = new V3(), fwd = new V3();
   let steerNow = 0, running = false, locked = false, raf = 0, last = 0;
   let currentType = 'default';
   let reminderTriggeredAt = 0;
+  let activeActions = [];
 
-  // Reminder buttons. The window is click-through; it only listens to the mouse while the pointer is on a button.
+  // Dynamic Button Builder
   const ui = document.getElementById('choices');
-  const btns = [...ui.querySelectorAll('button')];
   const setInteractive = (on) => window.companion && window.companion.interactive(on);
-  function showChoices() { // centred above the car, clear of everything it can sweep through
+
+  function showChoices() {
+    ui.innerHTML = ''; // Clear existing
+
+    // Build buttons from activeActions
+    activeActions.forEach(action => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (action === 'completed') { b.textContent = 'Complete'; b.onclick = () => choose('EXIT_RIGHT', 'completed'); }
+      else if (action === 'postponed') { b.textContent = 'Snooze'; b.onclick = () => choose('TURN_AROUND', 'snoozed'); }
+      else if (action === 'skipped') { b.textContent = 'Skip'; b.onclick = () => choose('EXIT_LEFT', 'skipped'); }
+      else { b.textContent = 'Custom'; b.onclick = () => choose('EXIT_RIGHT', 'custom'); }
+
+      b.addEventListener('mouseenter', () => { if (!locked) setInteractive(true); });
+      b.addEventListener('mouseleave', () => setInteractive(false));
+      ui.appendChild(b);
+    });
+
     const mid = new V3(K.center.x, 0, K.center.z).project(camera);
-    ui.hidden = false; // unhide first so the button row can be measured
+    ui.hidden = false;
     ui.style.left = `${((mid.x + 1) / 2) * window.innerWidth}px`;
     ui.style.top = `${Math.max(8, roofPx() - CFG.buttonGapPx - ui.offsetHeight)}px`;
   }
@@ -452,14 +539,13 @@ async function startRenderer() {
     const o = pose;
     car.position.copy(o.pos);
     car.rotation.y = o.yaw;
-    tilt.rotation.set(-(0.04 + 0.03 * o.m) + o.lift, 0, -o.dir * 0.07 * o.m); // downhill pitch, lean outward
-    // Wheels roll with the distance travelled along the car's own axis (negative while sliding tail-first).
+    tilt.rotation.set(-(0.04 + 0.03 * o.m) + o.lift, 0, -o.dir * 0.07 * o.m);
     const travelled = step.copy(o.pos).sub(prev).dot(fwd.set(-Math.sin(o.yaw), 0, -Math.cos(o.yaw)));
     prev.copy(o.pos);
-    steerNow += (o.steer - steerNow) * Math.min(1, dt * 12); // smooth counter-steer
+    steerNow += (o.steer - steerNow) * Math.min(1, dt * 12);
     for (const w of wheels) {
       w.spin.rotation.x -= (travelled / w.radius) * (w.rear ? 1 + 0.8 * o.m : 1);
-      if (w.rear) w.spin.rotation.x -= o.burn * dt * 30;        // rear wheels light up
+      if (w.rear) w.spin.rotation.x -= o.burn * dt * 30;
       else w.steer.rotation.y = THREE.MathUtils.clamp(steerNow, -0.5, 0.5);
     }
     car.updateMatrixWorld(true);
@@ -479,34 +565,28 @@ async function startRenderer() {
     }
     const smoking = updateSmoke(dt, S.name !== 'DONE' && pose.m > 0.35);
     render();
-    if (S.name === 'DONE' && !smoking) {          // last frame was empty: tidy up and let main hide the window
+    if (S.name === 'DONE' && !smoking) {
       running = false;
       ui.hidden = true;
       setInteractive(false);
       window.companion.done();
-    } else if (S.name !== 'WAIT_FOR_CHOICE' || smoking) schedule(); // waiting for a click costs no frames
+    } else if (S.name !== 'WAIT_FOR_CHOICE' || smoking) schedule();
   }
 
-  function choose(next) {
+  function choose(nextState, logStatus) {
     if (S.name !== 'WAIT_FOR_CHOICE' || locked) return;
     locked = true;
-    btns.forEach((b) => (b.disabled = true));
+    [...ui.querySelectorAll('button')].forEach((b) => (b.disabled = true));
     setInteractive(false);
     window.companion?.logReminder({
       type: currentType,
-      status: next === 'EXIT_RIGHT' ? 'completed' : 'postponed',
+      status: logStatus,
       triggeredAt: reminderTriggeredAt,
       respondedAt: Date.now(),
     });
-    go(next);
+    go(nextState);
     last = performance.now();
     schedule();
-  }
-  document.getElementById('btn-drink').addEventListener('click', () => choose('EXIT_RIGHT'));
-  document.getElementById('btn-later').addEventListener('click', () => choose('TURN_AROUND'));
-  for (const b of btns) {
-    b.addEventListener('mouseenter', () => { if (!locked) setInteractive(true); });
-    b.addEventListener('mouseleave', () => setInteractive(false));
   }
 
   function start(payload) {
@@ -515,15 +595,12 @@ async function startRenderer() {
     locked = false;
     steerNow = 0;
     smokeClock = 0;
-    currentType =
-      payload && typeof payload.type === 'string' && payload.type
-        ? payload.type.slice(0, 64)
-        : 'default';
+    currentType = payload?.type || 'default';
+    activeActions = payload?.actions || ['completed', 'postponed']; // fallback
     reminderTriggeredAt = Date.now();
     placeCamera();
     plan();
     ui.hidden = true;
-    btns.forEach((b) => (b.disabled = false));
     car.visible = true;
     go('ENTER');
     STATES.ENTER.pose(0, pose);
@@ -532,7 +609,6 @@ async function startRenderer() {
     schedule();
   }
 
-  // Warm-up: compile shaders and upload textures once while the window is still hidden.
   car.visible = true; render(); car.visible = false; render();
 
   if (!window.companion) return console.error('Preload bridge missing; cannot receive triggers.');
