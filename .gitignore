@@ -1,5 +1,5 @@
-node_modules/*
-build/*
-dist/*
-*.log
-lib/*
+node_modules/
+dist/
+app.bundle.js
+lib/
+.DS_Store
