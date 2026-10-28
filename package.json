@@ -3,28 +3,29 @@
   "version": "0.1.0",
   "private": true,
   "description": "Animated desktop reminder companion",
+  "author": {
+    "name": "Shashank Asthana",
+    "email": "shashank.asthana05@gmail.com"
+  },
   "main": "app.js",
   "scripts": {
     "start": "electron .",
     "debug": "DEBUG=1 electron .",
-    "dist": "electron-builder --mac"
+   "build-renderer": "esbuild app.js --bundle --outfile=app.bundle.js --format=iife --loader:.js=js --external:electron --external:fs --external:path --external:os",
+    "dist": "npm run build-renderer && electron-builder --mac"
   },
   "dependencies": {
     "three": "^0.186.1"
   },
   "devDependencies": {
     "electron": "^45.0.0",
-    "electron-builder": "^24.13.3"
-
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.28.2"
   },
   "build": {
     "appId": "com.ae86.companion",
     "productName": "AE86 Companion",
-    "asar": true,
-    "asarUnpack": [
-      "assets/**/*",
-      "node_modules/three/**/*"
-    ],
+    "asar": false,
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
@@ -32,6 +33,16 @@
       "extendInfo": {
         "LSUIElement": true
       }
-    }
+    },
+    "files": [
+      "app.js",
+      "app.bundle.js",
+      "analytics.js",
+      "reminders.js",
+      "index.html",
+      "dashboard.html",
+      "settings.html",
+      "assets/**/*"
+    ]
   }
 }

@@ -68,3 +68,10 @@ You can configure up to 4 custom reminders via the **Settings…** tray menu.
 - **Actions:** Choose up to 4 actions (`Complete`, `Snooze`, `Skip`, `Custom`) that will appear as a horizontal row above the car when the reminder fires.
 
 Data is saved locally in `reminders.json` inside your OS's standard `userData` folder.
+
+```bash
+mkdir -p lib
+cp node_modules/three/build/three.module.js lib/
+cp -R node_modules/three/examples/jsm lib/
+```
+

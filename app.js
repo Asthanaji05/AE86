@@ -28,7 +28,10 @@ else startRenderer().catch((e) => console.error('FATAL', e));
 
 /* ------------------------------ MAIN PROCESS ------------------------------ */
 function startMain() {
-  const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain } = require('electron');
+  const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain , protocol} = require('electron');
+  protocol.registerSchemesAsPrivileged([
+    { scheme: 'file', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+  ]);
   const path = require('path');
   const { Analytics } = require('./analytics');
   const { Reminders } = require('./reminders');
