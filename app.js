@@ -32,6 +32,7 @@ function startMain() {
   protocol.registerSchemesAsPrivileged([
     { scheme: 'file', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
   ]);
+  app.setName('ae86-companion');
   const path = require('path');
   const { Analytics } = require('./analytics');
   const { Reminders } = require('./reminders');
@@ -130,27 +131,31 @@ function startMain() {
     if (busy) return;
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    
+    console.log(`[Scheduler] Ticking at ${timeStr}. Loaded reminders: ${remindersData.getAll().length}`);
 
     const due = remindersData.getAll().find(r => {
       if (r.schedule === 'manual') return false;
-      if (r.time !== timeStr) return false;
-
+      
       const key = `${r.id}_${now.toDateString()}_${timeStr}`;
       if (key === lastTriggeredKey) return false;
 
-      if (r.schedule === 'daily') return true;
+      if (r.schedule === 'daily') {
+        return r.time === timeStr;
+      }
       if (r.schedule === 'specific_days' && Array.isArray(r.days)) {
-        return r.days.includes(now.getDay()); // 0 = Sunday
+        return r.time === timeStr && r.days.includes(now.getDay());
       }
       if (r.schedule === 'interval') {
-        // simple interval from midnight (r.intervalHours)
-        const hoursSinceMidnight = now.getHours() + now.getMinutes() / 60;
-        return hoursSinceMidnight % r.intervalHours === 0 && now.getMinutes() === 0;
+        // For intervals, fire on the hour, every N hours
+        const hours = r.intervalHours || 1;
+        return now.getMinutes() === 0 && now.getHours() % hours === 0;
       }
       return false;
     });
 
     if (due) {
+      console.log(`[Scheduler] Firing: ${due.title} (${due.schedule})`);
       lastTriggeredKey = `${due.id}_${now.toDateString()}_${timeStr}`;
       drift(due);
     }
