@@ -338,7 +338,7 @@
         <div class="hint">For reminders you answered</div>
       </div>
       <div class="card">
-        <div class="label">Postponed / missed</div>
+        <div class="label">Snoozed / missed</div>
         <div class="value" id="deferred">0 / 0</div>
         <div class="hint">Kept separate from completions</div>
       </div>
@@ -405,6 +405,7 @@
     function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
     function render() {
       const events = selectedEvents();
+      const now = new Date();
       const counts = { completed: 0, postponed: 0, snoozed: 0, skipped: 0, custom: 0, missed: 0, pending: 0 };
       const resolved = counts.completed + counts.postponed + counts.snoozed + counts.skipped + counts.custom + counts.missed;
       const answered = events.filter(e => e.responseMs != null && Number.isFinite(Number(e.responseMs))).map(e => Number(e.responseMs));
@@ -412,11 +413,10 @@
       $('total').textContent = events.length;
       $('rate').textContent = resolved ? `${Math.round(counts.completed / resolved * 100)}%` : '—';
       $('avgResponse').textContent = avg == null ? '—' : fmtDuration(avg);
-      $('deferred').textContent = `${counts.postponed} / ${counts.missed}`;
+      $('deferred').textContent = `${counts.snoozed || 0} / ${counts.missed}`;
       $('periodLabel').textContent = periodText(period);
-      const maxOutcome = Math.max(1, counts.completed, counts.postponed, counts.missed, counts.pending);
-      $('outcomes').innerHTML = ['completed', 'postponed', 'missed', 'pending'].map(s => barRow(s[0].toUpperCase() + s.slice(1), counts[s] || 0, maxOutcome, s)).join('');
-      const now = new Date();
+      const maxOutcome = Math.max(1, counts.completed, counts.snoozed, counts.skipped, counts.custom, counts.postponed, counts.missed, counts.pending);
+      $('outcomes').innerHTML = ['completed', 'snoozed', 'skipped', 'custom', 'postponed', 'missed', 'pending'].map(s => barRow(s[0].toUpperCase() + s.slice(1), counts[s] || 0, maxOutcome, s)).join('');
       const slots = [];
       if (period === 'week') {
         const start = periodStart(now, period);
