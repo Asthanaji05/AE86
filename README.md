@@ -4,6 +4,8 @@
 ![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)
 ![Privacy](https://img.shields.io/badge/Privacy-100%25_Offline-success.svg)
 
+https://github.com/user-attachments/assets/f4d6bf4a-e941-4afe-b75c-03b982054912
+
 A lightweight, transparent desktop overlay featuring a drifting Toyota AE86. It stays hidden in your menu bar, slides onto your screen to deliver custom reminders, and waits for your response before drifting away.
 
 Built with **Electron**, **Three.js**, and **Vanilla JavaScript**.
