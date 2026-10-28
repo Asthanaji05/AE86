@@ -93,3 +93,9 @@ You can configure up to 4 custom reminders via the **Settings…** tray menu.
 - **Actions:** Choose up to 4 actions (`Complete`, `Snooze`, `Skip`, `Custom`) that will appear as a horizontal row above the car when the reminder fires.
 
 Data is saved locally in `reminders.json` inside your OS's standard `userData` folder.
+
+
+## 🙏 Credits & Acknowledgments
+
+- **3D Model:** [Toyota Trueno AE86 (Initial D)](https://sketchfab.com/3d-models/toyota-trueno-ae86-initial-d-40c0a445f8fa42568c7ecf208b6d97bd) by **[Flamestroke](https://sketchfab.com/flamestroke)** on Sketchfab.
+- **Inspiration:** *Initial D* (しげの秀一 / Shuichi Shigeno).
