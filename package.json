@@ -20,6 +20,11 @@
   "build": {
     "appId": "com.ae86.companion",
     "productName": "AE86 Companion",
+    "asar": true,
+    "asarUnpack": [
+      "assets/**/*",
+      "node_modules/three/**/*"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
@@ -27,15 +32,6 @@
       "extendInfo": {
         "LSUIElement": true
       }
-    },
-    "files": [
-      "app.js",
-      "analytics.js",
-      "reminders.js",
-      "index.html",
-      "dashboard.html",
-      "settings.html",
-      "assets/**/*"
-    ]
+    }
   }
 }
