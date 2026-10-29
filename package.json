@@ -1,7 +1,7 @@
 {
   "name": "ae86-companion",
   "version": "0.1.0",
-  "private": true,
+  "private": true, 
   "description": "Animated desktop reminder companion",
   "author": {
     "name": "Shashank Asthana",

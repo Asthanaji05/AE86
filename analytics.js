@@ -31,6 +31,7 @@ class Analytics {
   }
   log(rec) {
     const type = typeof rec.type === 'string' && rec.type ? rec.type.slice(0, 64) : 'default';
+    const title = typeof rec.title === 'string' && rec.title ? rec.title.slice(0, 64) : 'Untitled'; // NEW
     const validStatuses = ['completed', 'postponed', 'missed', 'pending', 'snoozed', 'skipped', 'custom'];
     const status = validStatuses.includes(rec.status) ? rec.status : 'pending';
     const triggeredAt = Number.isFinite(rec.triggeredAt) ? rec.triggeredAt : Date.now();
@@ -41,7 +42,15 @@ class Analytics {
     if (key === this._lastKey) return;
     this._lastKey = key;
 
-    this.data.events.push({ id: `r_${triggeredAt}_${Math.random().toString(36).slice(2, 6)}`, type, status, triggeredAt, respondedAt, responseMs });
+    this.data.events.push({ 
+      id: `r_${triggeredAt}_${Math.random().toString(36).slice(2, 6)}`, 
+      type, 
+      title,
+      status, 
+      triggeredAt, 
+      respondedAt, 
+      responseMs 
+    });
     this._prune();
     try { this._save(); } catch (e) { console.error('analytics: write failed', e.message); }
   }

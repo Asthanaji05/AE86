@@ -363,7 +363,7 @@
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Type</th>
+                <th>Reminder</th>
                 <th>Status</th>
                 <th>Response</th>
               </tr>
@@ -437,7 +437,7 @@
       const typeStats = types.map(type => { const rows = events.filter(e => (e.type || 'general') === type && e.responseMs != null); const mean = rows.length ? rows.reduce((a, e) => a + Number(e.responseMs), 0) / rows.length : null; return { type, mean, count: rows.length }; });
       $('responseTypes').innerHTML = typeStats.length ? typeStats.map(x => `<div class="bar-row"><div class="bar-label" title="${escapeHtml(x.type)}">${escapeHtml(x.type)}</div><div>${x.mean == null ? 'No responses' : fmtDuration(x.mean)}</div><div class="bar-num">${x.count}</div></div>`).join('') : '<div class="empty">No response data for this period.</div>';
       const recent = [...events].sort((a, b) => (validDate(b.triggeredAt) || 0) - (validDate(a.triggeredAt) || 0)).slice(0, 12);
-      $('recent').innerHTML = recent.length ? recent.map(e => `<tr><td>${fmtDate(e.triggeredAt)}</td><td>${escapeHtml(e.type || 'general')}</td><td><span class="pill ${escapeHtml(e.status || 'pending')}">${escapeHtml(e.status || 'pending')}</span></td><td>${fmtDuration(e.responseMs)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No reminders in this period.</td></tr>';
+      $('recent').innerHTML = recent.length ? recent.map(e=>`<tr><td>${fmtDate(e.triggeredAt)}</td><td>${escapeHtml(e.title || e.type || 'general')}</td><td><span class="pill ${escapeHtml(e.status||'pending')}">${escapeHtml(e.status||'pending')}</span></td><td>${fmtDuration(e.responseMs)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No reminders in this period.</td></tr>';
       $('footnote').textContent = allEvents.length ? `${allEvents.length} total local events stored. Pending reminders become missed after 10 minutes without a response. Times are shown in your system's local timezone.` : 'No events recorded yet. Trigger a reminder using your tray menu or keyboard shortcut.';
     }
     let loadToken = 0;

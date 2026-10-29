@@ -265,6 +265,8 @@ function startPreload() {
 
 /* ---------------------------------- PAGE ---------------------------------- */
 async function startRenderer() {
+  const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
   document.addEventListener('securitypolicyviolation', (e) =>
     console.error('CSP blocked:', e.blockedURI, 'by', e.violatedDirective));
 
@@ -506,14 +508,21 @@ async function startRenderer() {
   let steerNow = 0, running = false, locked = false, raf = 0, last = 0;
   let currentType = 'default';
   let reminderTriggeredAt = 0;
+  let activeTitle = 'Reminder'; 
   let activeActions = [];
 
   // Dynamic Button Builder
   const ui = document.getElementById('choices');
   const setInteractive = (on) => window.companion && window.companion.interactive(on);
+  const infoEl = document.getElementById('reminder-info');
 
   function showChoices() {
-    ui.innerHTML = ''; // Clear existing
+    ui.innerHTML = ''; 
+
+    // Build the info block
+    const timeStr = new Date(reminderTriggeredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    infoEl.innerHTML = `${escapeHtml(activeTitle)}<small>Triggered at ${timeStr}</small>`;
+    infoEl.hidden = false;
 
     // Build buttons from activeActions
     activeActions.forEach(action => {
@@ -533,6 +542,10 @@ async function startRenderer() {
     ui.hidden = false;
     ui.style.left = `${((mid.x + 1) / 2) * window.innerWidth}px`;
     ui.style.top = `${Math.max(8, roofPx() - CFG.buttonGapPx - ui.offsetHeight)}px`;
+    
+    // Position the info block just above the buttons
+    infoEl.style.left = ui.style.left;
+    infoEl.style.top = `${parseFloat(ui.style.top) - 10}px`; 
   }
 
   function go(name) {
@@ -576,6 +589,7 @@ async function startRenderer() {
     if (S.name === 'DONE' && !smoking) {
       running = false;
       ui.hidden = true;
+      infoEl.hidden = true;
       setInteractive(false);
       window.companion.done();
     } else if (S.name !== 'WAIT_FOR_CHOICE' || smoking) schedule();
@@ -588,6 +602,7 @@ async function startRenderer() {
     setInteractive(false);
     window.companion?.logReminder({
       type: currentType,
+      title: activeTitle, 
       status: logStatus,
       triggeredAt: reminderTriggeredAt,
       respondedAt: Date.now(),
@@ -604,7 +619,8 @@ async function startRenderer() {
     steerNow = 0;
     smokeClock = 0;
     currentType = payload?.type || 'default';
-    activeActions = payload?.actions || ['completed', 'postponed']; // fallback
+    activeTitle = payload?.title || 'Reminder'; // Save the title
+    activeActions = payload?.actions || ['completed', 'postponed'];
     reminderTriggeredAt = Date.now();
     placeCamera();
     plan();
